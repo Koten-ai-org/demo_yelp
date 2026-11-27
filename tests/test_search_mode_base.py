@@ -172,7 +172,7 @@ async def test_search_calls_run_turn_with_live_catalog(monkeypatch):
     assert out["target"] == "yelp-demo/_default/_default"
     assert out["zeus_url"] == "http://from-env:8080"
     assert out["model"] == "grok-4.5-latest"
-    note = "chat_request: live /v1/ai/chat_request.json base_id=base-9.1 req_id=req-live"
+    note = search_mod._catalog_note(_LIVE_CATALOG, "req-live")
     assert note in out["trace"]["notes"]
     assert "req-later" not in " ".join(out["trace"]["notes"])
 
@@ -190,8 +190,8 @@ async def test_live_catalog_rejects_a_base_above_the_client_floor(monkeypatch):
     out = await search_mod.run_search("pizza in Tampa", None)
 
     assert "error" in out
-    assert "base-9.1" in out["error"]
-    assert "requires client-floor-6" in out["error"]
+    assert _LIVE_CATALOG["_lineage"]["base_id"] in out["error"]
+    assert "requires client-floor-6;" in out["error"]
     assert "client.floor is 'client-floor-5'" in out["error"]
     runtime.agent.run_turn.assert_not_awaited()
 

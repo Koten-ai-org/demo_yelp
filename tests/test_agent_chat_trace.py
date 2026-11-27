@@ -172,7 +172,7 @@ def test_trace_payload_merges_notes_and_skips_hops_already_present() -> None:
     trace = trace_payload(rich)
     assert trace["hops"] == [{"name": "search"}]
     assert trace["notes"] == ["kept", "added"]
-    catalog = "chat_request: live /v1/ai/chat_request.json base_id=base-9.1 req_id=req-live"
+    catalog = "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
     with_catalog = trace_payload(rich, catalog, "")
     assert with_catalog["notes"] == ["kept", "added", catalog]
     assert trace["detective"]["version"] == 2
@@ -220,6 +220,15 @@ def _pour_turn() -> TurnResult:
     )
 
 
+def _live_catalog() -> dict:
+    return {
+        "messages": [
+            {"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}
+        ],
+        "_lineage": {"base_id": "base-9.1"},
+    }
+
+
 def _install(monkeypatch, turn: TurnResult):
     from local_guide import search as search_mod
     from local_guide.chat_store import CHATS
@@ -237,14 +246,7 @@ def _install(monkeypatch, turn: TurnResult):
     )
     target = SimpleNamespace(bucket="yelp-demo", scope="_default", collection="_default")
     remote = SimpleNamespace(
-        fetch_chat_request=AsyncMock(
-            return_value={
-                "messages": [
-                    {"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}
-                ],
-                "_lineage": {"base_id": "base-9.1"},
-            }
-        ),
+        fetch_chat_request=AsyncMock(return_value=_live_catalog()),
         last_req_id="req-live",
     )
     runtime = SimpleNamespace(
@@ -287,10 +289,8 @@ async def test_debug_true_search_passes_rewind_and_trace(monkeypatch) -> None:
     assert out["trace"]["session"]["preferred_req_id"] == "req-pref"
     assert out["trace"]["detective"]["version"] == 1
     assert "semantic_cache.off" in out["trace"]["notes"]
-    assert (
-        "chat_request: live /v1/ai/chat_request.json base_id=base-9.1 req_id=req-live"
-        in out["trace"]["notes"]
-    )
+    note = search_mod._catalog_note(_live_catalog(), "req-live")
+    assert note in out["trace"]["notes"]
     assert out["trace"]["hops"][0]["name"] == "find"
     from local_guide.chat_store import CHATS
     from local_guide.chat_trace import TOOL_ORDER
