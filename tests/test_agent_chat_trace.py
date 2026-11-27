@@ -172,7 +172,7 @@ def test_trace_payload_merges_notes_and_skips_hops_already_present() -> None:
     trace = trace_payload(rich)
     assert trace["hops"] == [{"name": "search"}]
     assert trace["notes"] == ["kept", "added"]
-    catalog = "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
+    catalog = "chat_request: live /v1/ai/chat_request.json base_id=base-9.1 req_id=req-live"
     with_catalog = trace_payload(rich, catalog, "")
     assert with_catalog["notes"] == ["kept", "added", catalog]
     assert trace["detective"]["version"] == 2
@@ -242,7 +242,7 @@ def _install(monkeypatch, turn: TurnResult):
                 "messages": [
                     {"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}
                 ],
-                "_lineage": {"base_id": "base-6.3"},
+                "_lineage": {"base_id": "base-9.1"},
             }
         ),
         last_req_id="req-live",
@@ -288,7 +288,7 @@ async def test_debug_true_search_passes_rewind_and_trace(monkeypatch) -> None:
     assert out["trace"]["detective"]["version"] == 1
     assert "semantic_cache.off" in out["trace"]["notes"]
     assert (
-        "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
+        "chat_request: live /v1/ai/chat_request.json base_id=base-9.1 req_id=req-live"
         in out["trace"]["notes"]
     )
     assert out["trace"]["hops"][0]["name"] == "find"
