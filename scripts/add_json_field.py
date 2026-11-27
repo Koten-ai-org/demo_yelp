@@ -11,7 +11,7 @@ Examples:
   # Add type=User to every line, write to a new file
   python add_json_field.py yelp_academic_dataset_user.json -k type -v User -o users_with_type.json
 
-  # In-place update (writes to a temp file, then replaces the original)
+  # Replace the input. -o uses the same temp file and atomic rename.
   python add_json_field.py data.json -k type -v User --in-place
 
   # Numeric / JSON values
@@ -25,10 +25,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Iterator, TextIO
+from typing import Any, TextIO
+
+
+class InputError(Exception):
+    """Bad input. main() prints the message and returns 1."""
 
 
 def parse_value(raw: str, value_type: str) -> Any:
@@ -53,58 +58,58 @@ def parse_value(raw: str, value_type: str) -> Any:
     raise ValueError(f"Unknown value type: {value_type}")
 
 
-def detect_format(path: Path, max_lines: int = 20) -> str:
-    """
-    Detect whether file is JSONL, a JSON array, or a single object.
-    Returns: 'jsonl' | 'array' | 'object'
+_NOT_JSON = object()
 
-    Yelp-style JSONL can have very long lines (hundreds of KB per record), so
-    detection reads full lines rather than a fixed byte sample.
-    """
-    with path.open("r", encoding="utf-8") as f:
-        # Skip leading blank lines / BOM
-        first_line = ""
-        while True:
-            line = f.readline()
-            if not line:
-                return "jsonl"
-            # Strip BOM from the very first non-empty content
-            s = line.lstrip("\ufeff").strip()
-            if not s:
-                continue
-            first_line = s
-            break
 
-        if first_line.startswith("["):
+def _next_nonempty(handle: TextIO) -> str | None:
+    while True:
+        line = handle.readline()
+        if not line:
+            return None
+        stripped = line.strip()
+        if stripped:
+            return stripped
+
+
+def _parse_line(line: str) -> Any:
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return _NOT_JSON
+
+
+def detect_format(path: Path) -> str:
+    """
+    Return 'jsonl', 'array', or 'object'.
+
+    A line that parses as one JSON object is JSONL, including a one-record
+    file such as `head -n 1`. A file whose only JSON value is an array stays
+    an array, so each element receives the field. A line that does not parse
+    is pretty-printed: '[' is an array and '{' is one object. Counting '{'
+    prefixes misreads a nested pretty-printed object as JSONL.
+
+    Yelp records can be hundreds of KB, so this reads full lines.
+    """
+    with path.open("r", encoding="utf-8-sig") as handle:
+        first = _next_nonempty(handle)
+        if first is None:
+            return "jsonl"
+        parsed = _parse_line(first)
+        if parsed is not _NOT_JSON:
+            if isinstance(parsed, list) and _next_nonempty(handle) is None:
+                return "array"
+            return "jsonl"
+        leader = first.lstrip()
+        if leader.startswith("["):
             return "array"
-        if not first_line.startswith("{"):
-            # Fallback: assume JSONL if first non-ws isn't [ or {
-            return "jsonl"
-
-        # Starts with '{': could be one object or JSONL (one object per line).
-        # Count subsequent non-empty lines that also look like objects.
-        # Important: do NOT use a small byte sample — first records can be huge.
-        non_empty = 1
-        starts_with_brace = 1
-        for _ in range(max_lines - 1):
-            line = f.readline()
-            if not line:
-                break
-            s = line.strip()
-            if not s:
-                continue
-            non_empty += 1
-            if s.startswith("{"):
-                starts_with_brace += 1
-
-        if non_empty >= 2 and starts_with_brace == non_empty:
-            return "jsonl"
-        return "object"
+        if leader.startswith("{"):
+            return "object"
+        return "jsonl"
 
 
 def add_field(obj: dict, key: str, value: Any, overwrite: bool) -> dict:
     if not isinstance(obj, dict):
-        raise TypeError(f"Expected object/dict, got {type(obj).__name__}")
+        raise InputError(f"Expected object/dict, got {type(obj).__name__}")
     if key in obj and not overwrite:
         return obj
     obj[key] = value
@@ -127,9 +132,12 @@ def process_jsonl(
             continue
         try:
             obj = json.loads(stripped)
-        except json.JSONDecodeError as e:
-            raise SystemExit(f"Invalid JSON on line {line_no}: {e}") from e
-        add_field(obj, key, value, overwrite)
+        except json.JSONDecodeError as exc:
+            raise InputError(f"Invalid JSON on line {line_no}: {exc}") from exc
+        try:
+            add_field(obj, key, value, overwrite)
+        except InputError as exc:
+            raise InputError(f"Line {line_no}: {exc}") from exc
         outfile.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
         outfile.write("\n")
         count += 1
@@ -147,11 +155,17 @@ def process_array(
     progress_every: int,
     indent: int | None,
 ) -> int:
-    data = json.load(infile)
+    try:
+        data = json.load(infile)
+    except json.JSONDecodeError as exc:
+        raise InputError(f"Invalid JSON: {exc}") from exc
     if not isinstance(data, list):
-        raise SystemExit("Expected a JSON array at top level")
+        raise InputError("Expected a JSON array at top level")
     for i, item in enumerate(data, start=1):
-        add_field(item, key, value, overwrite)
+        try:
+            add_field(item, key, value, overwrite)
+        except InputError as exc:
+            raise InputError(f"Item {i}: {exc}") from exc
         if progress_every and i % progress_every == 0:
             print(f"  processed {i:,} records...", file=sys.stderr)
     json.dump(data, outfile, ensure_ascii=False, indent=indent)
@@ -168,9 +182,12 @@ def process_object(
     overwrite: bool,
     indent: int | None,
 ) -> int:
-    data = json.load(infile)
+    try:
+        data = json.load(infile)
+    except json.JSONDecodeError as exc:
+        raise InputError(f"Invalid JSON: {exc}") from exc
     if not isinstance(data, dict):
-        raise SystemExit("Expected a JSON object at top level")
+        raise InputError("Expected a JSON object at top level")
     add_field(data, key, value, overwrite)
     json.dump(data, outfile, ensure_ascii=False, indent=indent)
     if indent is not None:
@@ -178,40 +195,36 @@ def process_object(
     return 1
 
 
-def open_output(
-    in_path: Path,
-    out_path: Path | None,
-    in_place: bool,
-) -> tuple[TextIO, Path | None, bool]:
+def _replace_target(dest: Path) -> Path:
+    """Path whose directory entry should be replaced.
+
+    Follow a symlink so the link stays a link and the target file is updated.
+    The destination itself is never opened with mode "w": that would truncate
+    an inode shared with the input through a hard link before the input is read.
     """
-    Returns (outfile, temp_path_or_None, should_replace_input).
-    temp_path is set when we need to rename over the destination at the end.
-    """
-    if in_place:
-        # Write to temp in same directory so os.replace is atomic on same filesystem
-        fd, tmp = tempfile.mkstemp(
-            prefix=in_path.name + ".",
-            suffix=".tmp",
-            dir=in_path.parent,
-            text=True,
-        )
-        return os.fdopen(fd, "w", encoding="utf-8"), Path(tmp), True
+    return dest.resolve()
 
-    if out_path is None:
-        raise SystemExit("Provide -o/--output or use --in-place")
 
-    if out_path.resolve() == in_path.resolve():
-        # Same path without --in-place: treat as in-place for safety
-        fd, tmp = tempfile.mkstemp(
-            prefix=in_path.name + ".",
-            suffix=".tmp",
-            dir=in_path.parent,
-            text=True,
-        )
-        return os.fdopen(fd, "w", encoding="utf-8"), Path(tmp), True
+def _open_temp(replace_path: Path) -> tuple[TextIO, Path]:
+    # Same directory as the final name so os.replace stays on one filesystem.
+    replace_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=replace_path.name + ".",
+        suffix=".tmp",
+        dir=replace_path.parent,
+    )
+    return os.fdopen(fd, "w", encoding="utf-8"), Path(tmp_name)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    return out_path.open("w", encoding="utf-8"), None, False
+
+def _publish(tmp_path: Path, replace_path: Path) -> None:
+    """Move the temp onto replace_path without leaving mkstemp's 0o600 mode."""
+    if replace_path.exists():
+        shutil.copymode(replace_path, tmp_path)
+    else:
+        current = os.umask(0)
+        os.umask(current)
+        os.chmod(tmp_path, 0o666 & ~current)
+    os.replace(tmp_path, replace_path)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,12 +257,13 @@ def main(argv: list[str] | None = None) -> int:
         "--output",
         type=Path,
         default=None,
-        help="Output file path",
+        help="Output file path (temp file, then atomic rename)",
     )
     parser.add_argument(
         "--in-place",
         action="store_true",
-        help="Update the input file in place (via temp file + atomic replace)",
+        help="Replace the input via a temp file and an atomic rename. "
+        "A symlink is kept; its target is updated.",
     )
     parser.add_argument(
         "--overwrite",
@@ -287,8 +301,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         value = parse_value(args.value, args.value_type)
-    except (ValueError, json.JSONDecodeError) as e:
-        print(f"Error parsing value: {e}", file=sys.stderr)
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"Error parsing value: {exc}", file=sys.stderr)
         return 1
 
     fmt = args.format
@@ -296,11 +310,13 @@ def main(argv: list[str] | None = None) -> int:
         fmt = detect_format(in_path)
         print(f"Detected format: {fmt}", file=sys.stderr)
 
-    outfile, tmp_path, replace_input = open_output(in_path, args.output, args.in_place)
-    dest_for_replace = in_path if args.in_place or replace_input else args.output
-
+    dest = in_path if args.in_place else args.output
+    assert dest is not None
+    replace_path = _replace_target(dest)
+    tmp_path: Path | None = None
     try:
-        with in_path.open("r", encoding="utf-8") as infile, outfile:
+        outfile, tmp_path = _open_temp(replace_path)
+        with in_path.open("r", encoding="utf-8-sig") as infile, outfile:
             if fmt == "jsonl":
                 n = process_jsonl(
                     infile,
@@ -331,22 +347,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
             outfile.flush()
             os.fsync(outfile.fileno())
-
+        _publish(tmp_path, replace_path)
+        tmp_path = None
+        print(
+            f"Done. Added {args.key!r}={value!r} to {n:,} record(s) → {replace_path}",
+            file=sys.stderr,
+        )
+        return 0
+    except InputError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    finally:
         if tmp_path is not None:
-            os.replace(tmp_path, dest_for_replace)
-            tmp_path = None
-
-    except Exception:
-        if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-        raise
-
-    out_desc = str(in_path) if args.in_place else str(args.output or in_path)
-    print(
-        f"Done. Added {args.key!r}={value!r} to {n:,} record(s) → {out_desc}",
-        file=sys.stderr,
-    )
-    return 0
 
 
 if __name__ == "__main__":

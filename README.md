@@ -75,6 +75,50 @@ Catalog image fields are relative (`/business-images/biz:<id>/1.png`). Vite and 
 | `BUSINESS_IMAGES_BASE_URL` | Optional absolute prefix (no trailing slash) passed to finalize when rewriting the manifest |
 | `FINALIZE_SKIP_COUCHBASE` | `1` to rebuild the manifest only |
 
+## Adding a field to Yelp JSON
+
+`scripts/add_json_field.py` writes one key/value pair onto every object in a JSON file. Yelp academic dumps are JSON Lines (one object per line, including very long lines). The same script also accepts a JSON array or a single JSON object. With `--format auto` (the default) a line that is one complete JSON object is JSON Lines, including a one-record file. A file whose only value is a JSON array stays an array. A line that does not parse on its own is pretty-printed.
+
+`scripts/truncate_yelp_subset.py` is a compatibility entry point. It calls the same `main`.
+
+Pass `-o` to write a new file, or `--in-place` to replace the input. Both write a temporary file in the destination directory and rename it into place only after the write succeeds, so a failed run leaves an existing file unchanged. A symlink stays a symlink; the file it points at is the one that changes. An existing key is left unchanged unless you pass `--overwrite`. You need `-o` or `--in-place`.
+
+```bash
+cd demo_yelp
+
+# Add type=User on every line and write a new file
+python scripts/add_json_field.py yelp_academic_dataset_user.json \
+  -k type -v User \
+  -o users_with_type.json
+
+# Replace the input file
+python scripts/add_json_field.py data.json -k type -v User --in-place
+
+# Boolean, number, and JSON values
+python scripts/add_json_field.py data.json -k active -v true --value-type bool
+python scripts/add_json_field.py data.json -k score -v 10 --value-type int
+python scripts/add_json_field.py data.json -k meta -v '{"source":"yelp"}' --value-type json
+```
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `input` | | Path of the JSON or JSONL file |
+| `-k`, `--key` | required | Field name to add, such as `type` |
+| `-v`, `--value` | required | Value to set. Interpretation depends on `--value-type` |
+| `--value-type` | `str` | `str`, `int`, `float`, `bool`, `null`, or `json` |
+| `-o`, `--output` | | Output path. Temp file, then an atomic rename. Required when `--in-place` is omitted |
+| `--in-place` | off | Replace the resolved input through a temp file and an atomic rename |
+| `--overwrite` | off | Replace the key when the object already has it |
+| `--format` | `auto` | `auto`, `jsonl`, `array`, or `object` |
+| `--indent` | | Pretty-print indent for array or object output. JSON Lines stay one record per line |
+| `--progress-every` | `100000` | Print progress every N records. `0` turns that off |
+
+`--value-type bool` accepts `true`, `false`, `1`, `0`, `yes`, `no`, `y`, and `n`. `--value-type json` parses `--value` with `json.loads`. `--value-type null` stores JSON `null`.
+
+JSON Lines output is one compact object per line, with non-ASCII characters left as themselves. Blank lines in a JSONL input are copied through. Progress (`processed N records...`) and the final count go to stderr: `Added '<key>'=<value> to N record(s)`.
+
+A missing input file, a value that does not match `--value-type`, or a line that is not valid JSON stops the run. If an in-place run fails, the temporary file is removed and the original file stays as it was.
+
 ## Docker
 
 `Dockerfile.frontend` builds the SPA and serves it with nginx, including `business-images` from `frontend/public`.
@@ -103,7 +147,7 @@ demo_yelp/
 │   ├── src/api/client.ts     # Zeus search, sample reviews, insight
 │   └── public/business-images/
 ├── src/local_guide/          # FastAPI + Zeus client (Home, Explore, Ask AI)
-├── scripts/                  # image upload / finalize helpers
+├── scripts/                  # Yelp JSON field helper, image upload / finalize
 ├── docker/                   # nginx template for Dockerfile.frontend
 ├── Dockerfile.frontend
 ├── Dockerfile.backend
