@@ -5,6 +5,7 @@ __pycache__/
 .coverage
 htmlcov/
 data/chats.jsonl
+data/demo/
 data/chat_requests/**
 !data/chat_requests/.gitkeep
 frontend/node_modules/
@@ -13,5 +14,6 @@ frontend/public/business-images/
 *.egg-info/
 dist/
 build/
+tools/couchbase-dev-tools/
 .env
 .DS_Store
