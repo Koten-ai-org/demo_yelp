@@ -1,7 +1,7 @@
 {
   "name": "localai-ui-template",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "LocalAI screen template. Search, reviews, and summaries use the local sample catalog.",
   "type": "module",
   "scripts": {
