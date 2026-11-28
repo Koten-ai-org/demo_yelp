@@ -36,6 +36,10 @@ pytest -q
 
 Frontend typecheck, when needed: `cd frontend && npx tsc --noEmit`.
 
+## Demo data
+
+Load the Couchbase `yelp-demo` bucket on the host with `python scripts/import_yelp_demo_data.py` after `COUCHBASE_USERNAME`, `COUCHBASE_PASSWORD`, and `ZEUS_BUCKET` are set in `.env`. Setup, the `cbimport` prompt, and the CDN files are in the README section "Load the Yelp dataset". Do not run that download inside the API container.
+
 ## Host servers
 
 Start `npm run dev`, `npm run preview`, or `python -m local_guide` on the host when the user asks for a host process. Review and browser checks use the Compose stack above.

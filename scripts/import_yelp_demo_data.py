@@ -36,12 +36,18 @@ DEFAULT_CDN_URL = (
 TOOLS_DOC_URL = "https://docs.couchbase.com/cloud/reference/command-line-tools.html"
 TOOLS_DIR_NAME = "couchbase-dev-tools"
 USER_AGENT = "demo-yelp-import/1"
+# Match the keys this app reads. Business hydrate looks up biz:yelp:<id>
+# (n1ql_hydrate.business_doc_keys). Users are user:<id>
+# (detail.yelp_user_doc_key). Review USE KEYS values are rev:<id>.
+# Check-in and tip each have their own #MONO_INCR# sequence. A shared
+# counter would restart at 1 in the second cbimport process and overwrite
+# the first file's documents.
 IMPORT_JOBS = (
-    ("yelp_academic_dataset_business_with_type.json", "%business_id%"),
-    ("yelp_academic_dataset_checkin_with_type.json", "#MONO_INCR#"),
-    ("yelp_academic_dataset_review_with_type.json", "%review_id%"),
-    ("yelp_academic_dataset_tip_with_type.json", "#MONO_INCR#"),
-    ("yelp_academic_dataset_user_with_type.json", "%user_id%"),
+    ("yelp_academic_dataset_business_with_type.json", "biz:yelp:%business_id%"),
+    ("yelp_academic_dataset_checkin_with_type.json", "checkin::#MONO_INCR#"),
+    ("yelp_academic_dataset_review_with_type.json", "rev:%review_id%"),
+    ("yelp_academic_dataset_tip_with_type.json", "tip::#MONO_INCR#"),
+    ("yelp_academic_dataset_user_with_type.json", "user:%user_id%"),
 )
 REQUIRED_FILES = tuple(name for name, _key in IMPORT_JOBS)
 STOP_MESSAGE = (
@@ -737,8 +743,6 @@ def import_command(
         f"couchbase://{settings.host}",
         "-u",
         settings.username,
-        "-p",
-        settings.password,
         "-b",
         settings.bucket,
         "-d",
@@ -784,10 +788,15 @@ def run_import(
     if stdbuf:
         command = [stdbuf, "-oL", "-eL", *command]
     print(f"importing {dataset.name} (key {key_expr})", file=stderr)
+    # CB_PASSWORD is read by cbimport when -p is omitted, so the password
+    # is not visible in /proc/<pid>/cmdline. The child environ is mode 0400.
+    child_env = os.environ.copy()
+    child_env["CB_PASSWORD"] = settings.password
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=child_env,
         text=True,
         bufsize=1,
     )

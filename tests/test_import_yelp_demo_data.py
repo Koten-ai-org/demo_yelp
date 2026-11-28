@@ -288,11 +288,11 @@ def test_import_commands_use_file_uris_and_key_expressions(tmp_path, mod) -> Non
     )
     cbimport = tmp_path / "cbimport"
     expected = {
-        "yelp_academic_dataset_business_with_type.json": "%business_id%",
-        "yelp_academic_dataset_checkin_with_type.json": "#MONO_INCR#",
-        "yelp_academic_dataset_review_with_type.json": "%review_id%",
-        "yelp_academic_dataset_tip_with_type.json": "#MONO_INCR#",
-        "yelp_academic_dataset_user_with_type.json": "%user_id%",
+        "yelp_academic_dataset_business_with_type.json": "biz:yelp:%business_id%",
+        "yelp_academic_dataset_checkin_with_type.json": "checkin::#MONO_INCR#",
+        "yelp_academic_dataset_review_with_type.json": "rev:%review_id%",
+        "yelp_academic_dataset_tip_with_type.json": "tip::#MONO_INCR#",
+        "yelp_academic_dataset_user_with_type.json": "user:%user_id%",
     }
     assert [name for name, _key in mod.IMPORT_JOBS] == list(expected)
     for name, key in mod.IMPORT_JOBS:
@@ -301,7 +301,9 @@ def test_import_commands_use_file_uris_and_key_expressions(tmp_path, mod) -> Non
         assert argv[:4] == [str(cbimport), "json", "--format", "lines"]
         assert argv[argv.index("-c") + 1] == "couchbase://localhost"
         assert argv[argv.index("-u") + 1] == "user"
-        assert argv[argv.index("-p") + 1] == "secret"
+        assert "-p" not in argv
+        assert "--password" not in argv
+        assert "secret" not in argv
         assert argv[argv.index("-b") + 1] == "yelp-demo"
         assert argv[argv.index("-d") + 1] == dataset.resolve().as_uri()
         assert argv[argv.index("--generate-key") + 1] == key
@@ -311,10 +313,12 @@ def test_import_commands_use_file_uris_and_key_expressions(tmp_path, mod) -> Non
 
 def test_run_import_shows_percent_and_hides_password(tmp_path, mod, capsys) -> None:
     args_out = tmp_path / "args.txt"
+    secret_out = tmp_path / "secret.txt"
     tool = tmp_path / "cbimport"
     tool.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$@\" > {json.dumps(str(args_out))}\n"
+        f"printf '%s' \"$CB_PASSWORD\" > {json.dumps(str(secret_out))}\n"
         "echo 'JSON import - 1 documents imported, 0 errors'\n"
         "echo 'finished 100%'\n",
         encoding="utf-8",
@@ -329,16 +333,18 @@ def test_run_import_shows_percent_and_hides_password(tmp_path, mod, capsys) -> N
         mod.DEFAULT_CDN_URL,
         "localhost",
     )
-    code = mod.run_import(tool, settings, dataset, "%business_id%", 2)
+    code = mod.run_import(tool, settings, dataset, "biz:yelp:%business_id%", 2)
     captured = capsys.readouterr()
     assert code == 0
     assert "50.0%" in captured.err
     assert "100%" in captured.err
     assert "s3cret-value" not in captured.err
     recorded = args_out.read_text(encoding="utf-8")
-    assert "%business_id%" in recorded
+    assert "biz:yelp:%business_id%" in recorded
     assert dataset.resolve().as_uri() in recorded
-    assert "s3cret-value" in recorded
+    assert "-p" not in recorded.splitlines()
+    assert "s3cret-value" not in recorded
+    assert secret_out.read_text(encoding="utf-8") == "s3cret-value"
 
 
 def _serve(body: bytes, ranges: bool = False):

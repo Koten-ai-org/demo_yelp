@@ -39,6 +39,57 @@ DOCKER_BUILDKIT=1 docker compose up -d --build
 
 `docker compose logs -f` follows the containers.
 
+## Load the Yelp dataset
+
+`scripts/import_yelp_demo_data.py` fills the `yelp-demo` bucket. It checks Couchbase, downloads the academic JSON from the static CDN into `data/demo/`, then loads each file with `cbimport`. Nothing is downloaded until the username, password, and bucket check succeed, and until `cbimport` is available.
+
+Run it on the host, in the project virtualenv. The API container does not include this script or `cbimport`.
+
+```bash
+cd demo_yelp
+source .venv/bin/activate
+pip install python-dotenv   # already present unless the venv was installed with --no-deps
+python scripts/import_yelp_demo_data.py
+```
+
+Create the bucket in Couchbase before you run the script. The script does not create it. The name is `ZEUS_BUCKET` (`yelp-demo` in `.env.example`). The cluster user is `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD`, which is separate from `ZEUS_USERNAME` / `ZEUS_PASSWORD`. A `$` in the password is kept as written.
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `COUCHBASE_USERNAME` | yes | Couchbase user. `.env.example` uses `Administrator` |
+| `COUCHBASE_PASSWORD` | yes | Couchbase password. Empty stops the script before any download |
+| `ZEUS_BUCKET` | yes | Bucket to import into. `.env.example` uses `yelp-demo` |
+| `COUCHBASE_HOST` | no | Cluster host for `couchbase://` and for the management check on port 8091. When unset, the host is taken from `COUCHBASE_QUERY_URL`, then `localhost` |
+| `YELP_DEMO_DATA_URL` | no | CDN directory of the JSON files. Default `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/yelp-demo/data` |
+
+`COUCHBASE_QUERY_URL` is also what the API uses for N1QL (port 8093). The import script only reads its hostname.
+
+The check calls `http://<host>:8091/pools/default`, then `http://<host>:8091/pools/default/buckets/<bucket>`. A rejected login or a missing bucket stops the script before the download. Couchbase must accept that user on the management port and on the data service (`cbimport` uses `couchbase://<host>`).
+
+`cbimport` is looked up on `PATH`, then at `/opt/couchbase/bin/cbimport`, then under `tools/couchbase-dev-tools/`. If it is missing, the script asks:
+
+```text
+cbimport was not found. Download and install the latest Couchbase command-line tools? [y/N]
+```
+
+Answer `y` to download the Couchbase dev tools for this machine (`x86_64` or `aarch64`) into `tools/couchbase-dev-tools/`. That directory is gitignored, and the install does not need root. Answer `n`, or run the script without a terminal, and it stops before the download. `cbimport` is what loads the JSON. Install it and run the script again.
+
+The CDN does not publish a file list. The script downloads these JSON Lines files. Together they are about 6 GB. The review file is about 5.1 GB, so leave that much free disk under `data/demo/` (also gitignored).
+
+| File | Document key |
+|------|----------------|
+| `yelp_academic_dataset_business_with_type.json` | `biz:yelp:%business_id%` |
+| `yelp_academic_dataset_checkin_with_type.json` | `checkin::#MONO_INCR#` |
+| `yelp_academic_dataset_review_with_type.json` | `rev:%review_id%` |
+| `yelp_academic_dataset_tip_with_type.json` | `tip::#MONO_INCR#` |
+| `yelp_academic_dataset_user_with_type.json` | `user:%user_id%` |
+
+Progress goes to stderr. A download prints a percent from `Content-Length` (`name  42.1%  512 MiB / 1.2 GiB`). Each file is written to `data/demo/<name>.partial` and renamed when the byte count matches. Run the script again to resume a partial file or to skip a file that is already the right size. `cbimport --verbose` is streamed the same way. When its lines have no percent, the script prints one from the number of JSON lines saved during the download.
+
+`cbimport` is invoked once per file, in the order above. The dataset path is a `file://` URL. A non-zero exit stops the remaining files. The password is given to `cbimport` as `CB_PASSWORD` and is not placed on the command line or printed. Those document keys are the ones the app reads: business detail looks up `biz:yelp:<id>`, reviews look up `rev:<id>`, and user hydrate looks up `user:<id>`. Check-in and tip each have their own counter so the two imports do not overwrite each other.
+
+If one of the five files cannot be downloaded, the script does not start `cbimport`. `yelp_academic_dataset_user_with_type.json` has returned HTTP 403 from the CDN. In that case the other files still download, and the import waits until that object is readable. Run the script again after it is. Completed files are left in place.
+
 ## Example queries
 
 These match businesses in the 100-row catalog (Coffee & Tea, parks, Philadelphia, Tampa, and similar).
@@ -147,7 +198,7 @@ demo_yelp/
 │   ├── src/api/client.ts     # Zeus search, sample reviews, insight
 │   └── public/business-images/
 ├── src/local_guide/          # FastAPI + Zeus client (Home, Explore, Ask AI)
-├── scripts/                  # Yelp JSON field helper, image upload / finalize
+├── scripts/                  # Demo import, JSON field helper, image upload / finalize
 ├── docker/                   # nginx template for Dockerfile.frontend
 ├── Dockerfile.frontend
 ├── Dockerfile.backend
@@ -188,7 +239,9 @@ The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus
 | `LLM_BASE_URL` | Replaces the `LLM_BASE_URL` sentinel (`https://api.x.ai/v1` in `.env.example`) |
 | `LLM_MODEL` | Replaces the `LLM_MODEL` sentinel (`grok-4.5-latest` in `.env.example`) |
 | `LLM_API_KEY` | Required for agent turns. Set it in `.env`, not in `config.json` |
-| `COUCHBASE_QUERY_URL` / `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD` | N1QL hydrate for suggest and business detail |
+| `COUCHBASE_QUERY_URL` / `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD` | N1QL hydrate for suggest and business detail. The same username and password are required by the dataset import |
+| `COUCHBASE_HOST` | Optional cluster host for the dataset import. Otherwise the host in `COUCHBASE_QUERY_URL`, then `localhost` |
+| `YELP_DEMO_DATA_URL` | CDN directory for `scripts/import_yelp_demo_data.py`. Has a default; see [Load the Yelp dataset](#load-the-yelp-dataset) |
 
 | Symptom | Fix |
 |---------|-----|
